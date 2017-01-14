@@ -1,0 +1,22 @@
+#- System
+interface=<interface>
+driver=nl80211
+hw_mode=g
+channel=8 
+
+#- Auth & Security
+ssid=<ssid>
+macaddr_acl=0
+
+auth_algs=1
+
+wpa=2
+wpa_passphrase=<passphrase>
+
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP
+rsn_pairwise=CCMP
+
+#- Misc Params
+beacon_int=100
+dtim_period=2
