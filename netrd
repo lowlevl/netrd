@@ -57,7 +57,6 @@ for oInterface in forwardInterfaces:
   dhcpdConfFile.write(dhcpdSubnet)
 
   # Setup iptables for this interface
-  call(("iptables -t nat -A POSTROUTING -o " + oInterface['interfaceName'] + " -j MASQUERADE").split())
   call(("iptables -A FORWARD -i " + oInterface['interfaceName'] + " -j ACCEPT").split())
   call(("iptables -A FORWARD -o " + oInterface['interfaceName'] + " -j ACCEPT").split())
 
@@ -72,6 +71,9 @@ for oInterface in forwardInterfaces:
   call(("ip link set " \
     + oInterface['interfaceName'] \
     + " up").split())
+
+# Setup MASQUERADE for output
+call(("iptables -t nat -A POSTROUTING -o " + conf['inetInterface'] + " -j MASQUERADE").split())
 
 dhcpdConfFile.close()
 
@@ -125,8 +127,10 @@ except KeyboardInterrupt:
       + " down").split())
 
     # Flush set iptables
-    call(("iptables -t nat -D POSTROUTING -o " + oInterface['interfaceName'] + " -j MASQUERADE").split())
     call(("iptables -D FORWARD -i " + oInterface['interfaceName'] + " -j ACCEPT").split())
     call(("iptables -D FORWARD -o " + oInterface['interfaceName'] + " -j ACCEPT").split())
+
+  # Flush MASQUERADE
+  call(("iptables -t nat -D POSTROUTING -o " + conf['inetInterface'] + " -j MASQUERADE").split())
 
   exit(0)
