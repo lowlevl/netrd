@@ -1,31 +1,132 @@
-#!/bin/bash
+#!/usr/bin/env python3
 
-# The internet interface
-inetIface=eth0
+import os, sys, json, time
+from subprocess import call
 
-# The wifi AP interface
-brIface=wlan0
+scriptDir = os.path.dirname(os.path.abspath(__file__))
 
-# ---- Port Forwarding config ---- #
-# Enable NAT
-sysctl -w net.ipv4.ip_forward=1
-echo "  + NAT enabled"
+# Request elevated privileges
+if os.geteuid() != 0:
+   exit("You need to have root privileges to run this script.\nPlease try again, this time using 'sudo'. Exiting.")
 
-# Setup iptables
-iptables -I INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
-iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+# Load up config
+with open('config.json') as configFile:
+  conf = json.load(configFile)
 
-iptables -t nat -I POSTROUTING -o "$inetIface" -j MASQUERADE
-echo "  + Set iptables for forwarding"
+inetInterface = conf['inetInterface']
+forwardInterfaces = conf['forwardInterfaces']
 
-# ---- Services start ---- #
-# Launch udhcpd
-mkdir -p /var/lib/misc/
-touch /var/lib/misc/udhcpd.leases
-udhcpd -S -cf udhcpd.conf
-echo "  + udhcpd"
+dhcpdList = ""
+hostapdIface = ""
 
-# Launch hostapd
-hostapd -B hostapd.conf
-echo -e "  + hostapd\n"
+# Parse config elements
+for oInterface in forwardInterfaces:
+  dhcpdList += oInterface['interfaceName'] + " "
+  if oInterface['wireless']:
+    hostapdIface += oInterface['interfaceName'] + " "
 
+dhcpdList = dhcpdList.strip()
+hostapdIface = hostapdIface.strip()
+
+if len(hostapdIface.split()) > 1:
+  exit("The script supports only one wireless emmiting interface.")
+
+# Enable ip forwarding
+call(("sysctl -w net.ipv4.ip_forward=1").split())
+
+# Copy base template to config
+with open('dhcpd-base.conf', 'r') as file :
+  dhcpdBase = file.read()
+
+dhcpdConfFile = open('/tmp/dhcpd.conf', 'w')
+dhcpdConfFile.write(dhcpdBase)
+
+for oInterface in forwardInterfaces:
+  with open('dhcpd-subnet.conf', 'r') as file :
+    dhcpdSubnet = file.read()
+
+  # Replaces vars in template & write
+  dhcpdSubnet = dhcpdSubnet.replace("<subnet>", oInterface['subNetwork'])
+  dhcpdSubnet = dhcpdSubnet.replace("<netmask>", oInterface['netMask'])
+  dhcpdSubnet = dhcpdSubnet.replace("<routerip>", oInterface['netAddress'])
+  dhcpdSubnet = dhcpdSubnet.replace("<broadcast>", oInterface['broadcast'])
+  dhcpdSubnet = dhcpdSubnet.replace("<dns>", oInterface['dns'])
+  dhcpdSubnet = dhcpdSubnet.replace("<range-min>", oInterface['netRangeMin'])
+  dhcpdSubnet = dhcpdSubnet.replace("<range-max>", oInterface['netRangeMax'])
+
+  dhcpdConfFile.write(dhcpdSubnet)
+
+  # Setup iptables for this interface
+  call(("iptables -t nat -A POSTROUTING -o " + oInterface['interfaceName'] + " -j MASQUERADE").split())
+  call(("iptables -A FORWARD -i " + oInterface['interfaceName'] + " -j ACCEPT").split())
+  call(("iptables -A FORWARD -o " + oInterface['interfaceName'] + " -j ACCEPT").split())
+
+  # Setup interface
+  call(("ip addr flush dev " \
+    + oInterface['interfaceName']).split())
+  call(("ip addr add " \
+    + oInterface['netAddress'] + "/" \
+    + oInterface['netMask'] + " broadcast " \
+    + oInterface['broadcast'] + " dev " \
+    + oInterface['interfaceName']).split())
+  call(("ip link set " \
+    + oInterface['interfaceName'] \
+    + " up").split())
+
+dhcpdConfFile.close()
+
+# Touch dhcpd.leases
+dhcpdLeasesFile = open('/tmp/dhcpd.leases', 'w')
+dhcpdLeasesFile.close()
+
+# Load hostapd conf template & open config as 'w' if needed
+if hostapdIface != "":
+  with open('hostapd-base.conf', 'r') as file :
+    hostapdBase = file.read()
+
+  hostapdConfFile = open('/tmp/hostapd.conf', 'w')
+
+  # Set vars in template
+  hostapdBase = hostapdBase.replace("<interface>", hostapdIface)
+  hostapdBase = hostapdBase.replace("<netdriver>", conf['wifiConfig']['wifiDriver'])
+  hostapdBase = hostapdBase.replace("<wifimode>", conf['wifiConfig']['wifiMode'])
+  hostapdBase = hostapdBase.replace("<wifichannel>", conf['wifiConfig']['wifiChannel'])
+  hostapdBase = hostapdBase.replace("<ssid>", conf['wifiConfig']['apName'])
+  hostapdBase = hostapdBase.replace("<passphrase>", conf['wifiConfig']['apPass'])
+
+  hostapdConfFile.write(hostapdBase)
+  hostapdConfFile.close()
+
+  # Bypass rfkill
+  call(("rfkill unblock wifi " + hostapdIface).split())
+
+# Start dhcpd and hostapd if needed
+call(("dhcpd -cf /tmp/dhcpd.conf -pf " + scriptDir + "/pid/dhcpd.pid -lf /tmp/dhcpd.leases " + dhcpdList).split())
+if hostapdIface != "":
+  call(("hostapd -B -P " + scriptDir + "/pid/hostapd.pid /tmp/hostapd.conf").split())
+
+# Block until stop
+try:
+  while 1:
+    time.sleep(1)
+except KeyboardInterrupt:
+  # Shuting down servers
+  call(("pkill -15 -F pid/dhcpd.pid").split())
+  call(("pkill -15 -F pid/hostapd.pid").split())
+
+  for oInterface in forwardInterfaces:
+    # Flush ip
+    call(("ip addr flush dev " \
+      + oInterface['interfaceName']).split())
+
+    # Down interface
+    call(("ip link set " \
+      + oInterface['interfaceName'] \
+      + " down").split())
+
+    # Flush set iptables
+    call(("iptables -t nat -D POSTROUTING -o " + oInterface['interfaceName'] + " -j MASQUERADE").split())
+    call(("iptables -D FORWARD -i " + oInterface['interfaceName'] + " -j ACCEPT").split())
+    call(("iptables -D FORWARD -o " + oInterface['interfaceName'] + " -j ACCEPT").split())
+
+  exit(0)
