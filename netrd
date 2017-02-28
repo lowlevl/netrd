@@ -9,6 +9,7 @@ scriptDir = os.path.dirname(os.path.abspath(__file__))
 if os.geteuid() != 0:
    exit("You need to have root privileges to run this script.\nPlease try again, this time using 'sudo'. Exiting.")
 
+print("[Info] Loading config... ", end='')
 # Load up config
 with open('config.json') as configFile:
   conf = json.load(configFile)
@@ -29,10 +30,13 @@ dhcpdList = dhcpdList.strip()
 hostapdIface = hostapdIface.strip()
 
 if len(hostapdIface.split()) > 1:
-  exit("The script supports only one wireless emmiting interface.")
+  exit("Failed, can't emmit on mor than 1 wireless interfaces.")
+
+print("Done.")
 
 # Enable ip forwarding
-call(("sysctl -w net.ipv4.ip_forward=1").split())
+call("sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 ", shell=True)
+print("[Info] Setuped ip forwarding")
 
 # Copy base template to config
 with open('dhcpd-base.conf', 'r') as file :
@@ -57,8 +61,8 @@ for oInterface in forwardInterfaces:
   dhcpdConfFile.write(dhcpdSubnet)
 
   # Setup iptables for this interface
-  call(("iptables -A FORWARD -i " + oInterface['interfaceName'] + " -j ACCEPT").split())
-  call(("iptables -A FORWARD -o " + oInterface['interfaceName'] + " -j ACCEPT").split())
+  call("iptables -A FORWARD -i " + oInterface['interfaceName'] + " -j ACCEPT", shell=True)
+  call("iptables -A FORWARD -o " + oInterface['interfaceName'] + " -j ACCEPT", shell=True)
 
   # Setup interface
   call(("ip addr flush dev " \
@@ -72,8 +76,20 @@ for oInterface in forwardInterfaces:
     + oInterface['interfaceName'] \
     + " up").split())
 
+  print("[Info] Setuped " \
+  + oInterface['interfaceName'] \
+  + " up, with addr " \
+  + oInterface['netAddress'] + "/" \
+  + oInterface['netMask'] \
+  + " to FORWARD")
+
 # Setup MASQUERADE for output
-call(("iptables -t nat -A POSTROUTING -o " + conf['inetInterface'] + " -j MASQUERADE").split())
+if conf['inetInterface'] != "":
+  call("iptables -t nat -A POSTROUTING -o " + conf['inetInterface'] + " -j MASQUERADE", shell=True)
+  print("[Info] Setuped " + conf['inetInterface'] + " to MASQUERADE")
+else:
+  print("[Info] No internet interface was specified, just creating networks")
+
 
 dhcpdConfFile.close()
 
@@ -100,12 +116,16 @@ if hostapdIface != "":
   hostapdConfFile.close()
 
   # Bypass rfkill
-  call(("rfkill unblock wifi " + hostapdIface).split())
+  call("rfkill unblock wifi " + hostapdIface, shell=True)
+
+print("[Info] Successfully generated daemon required files")
 
 # Start dhcpd and hostapd if needed
-call(("dhcpd -cf /tmp/dhcpd.conf -pf " + scriptDir + "/pid/dhcpd.pid -lf /tmp/dhcpd.leases " + dhcpdList).split())
+print("[Info] Starting dhcpd..")
+call("dhcpd -cf /tmp/dhcpd.conf -pf " + scriptDir + "/pid/dhcpd.pid -lf /tmp/dhcpd.leases " + dhcpdList + " >/dev/null 2>&1 ", shell=True)
 if hostapdIface != "":
-  call(("hostapd -B -P " + scriptDir + "/pid/hostapd.pid /tmp/hostapd.conf").split())
+  print("[Info] Starting hostapd..")
+  call("hostapd -B -P " + scriptDir + "/pid/hostapd.pid /tmp/hostapd.conf >/dev/null 2>&1 ", shell=True)
 
 # Block until stop
 try:
@@ -113,8 +133,13 @@ try:
     time.sleep(1)
 except KeyboardInterrupt:
   # Shuting down servers
-  call(("pkill -15 -F pid/dhcpd.pid").split())
-  call(("pkill -15 -F pid/hostapd.pid").split())
+  print("")
+  print("[Info] Stopping dhcpd..")
+  call("pkill -15 -F pid/dhcpd.pid", shell=True)
+
+  if hostapdIface != "":
+    print("[Info] Stopping hostapd..")
+    call("pkill -15 -F pid/hostapd.pid", shell=True)
 
   for oInterface in forwardInterfaces:
     # Flush ip
@@ -127,10 +152,11 @@ except KeyboardInterrupt:
       + " down").split())
 
     # Flush set iptables
-    call(("iptables -D FORWARD -i " + oInterface['interfaceName'] + " -j ACCEPT").split())
-    call(("iptables -D FORWARD -o " + oInterface['interfaceName'] + " -j ACCEPT").split())
+    call("iptables -D FORWARD -i " + oInterface['interfaceName'] + " -j ACCEPT", shell=True)
+    call("iptables -D FORWARD -o " + oInterface['interfaceName'] + " -j ACCEPT", shell=True)
 
   # Flush MASQUERADE
-  call(("iptables -t nat -D POSTROUTING -o " + conf['inetInterface'] + " -j MASQUERADE").split())
+  call("iptables -t nat -D POSTROUTING -o " + conf['inetInterface'] + " -j MASQUERADE", shell=True)
+  print("[Info] Successfully flushed created tables..")
 
   exit(0)
